@@ -126,6 +126,11 @@ void configure(struct config *conf, int argc, char *argv[]) {
 		{0, 0, 0, 0}
 	};
 
+	if (argc > 1 && strcmp(argv[1], "--help") == 0) {
+		usage();
+		exit(0);
+	}
+
 	conf->upstream_fd = UPSTREAM_FD;
 	conf->rb_size = RB_SIZE;
 	conf->header = HEADER;
