@@ -113,6 +113,7 @@ int do_upstream(char *string) {
 void configure(struct config *conf, int argc, char *argv[]) {
 	int opt;
 	int option_index = 0;
+	int upstream_fd;
 
 	static struct option long_options[] = {
 		{"upstream", required_argument, 0, '0'},
@@ -131,7 +132,6 @@ void configure(struct config *conf, int argc, char *argv[]) {
 		exit(0);
 	}
 
-	conf->upstream_fd = UPSTREAM_FD;
 	conf->rb_size = RB_SIZE;
 	conf->header = HEADER;
 	conf->maxconn = MAXCONN;
@@ -142,15 +142,17 @@ void configure(struct config *conf, int argc, char *argv[]) {
 	while ((opt = getopt_long_only(argc, argv, "", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case '0':
-				conf->upstream_fd = do_upstream(optarg);
-				if (conf->upstream_fd == -1) {
+				upstream_fd = do_upstream(optarg);
+				if (upstream_fd == -1) {
 					if (errno != 0)
 						perror("upstream");
 					else
 						fprintf(stderr, "upstream: invalid string %s\n", optarg);
 					exit(EXIT_FAILURE);
 				}
-				conf->first_fd = conf->last_fd = 6;
+				close(UPSTREAM_FD);
+				dup2(upstream_fd, UPSTREAM_FD);
+				close(upstream_fd);
 				break;
 			case '1':
 				conf->bind_fd = do_bind(optarg);
@@ -186,7 +188,7 @@ void configure(struct config *conf, int argc, char *argv[]) {
 		}
 	}
 
-	if (conf->upstream_fd == 0 && conf->p_size > 0) {
+	if (conf->p_size > 0) {
 		int err = fcntl(STDIN_FILENO, F_SETPIPE_SZ, conf->p_size);
 
 		if (err < 0) {

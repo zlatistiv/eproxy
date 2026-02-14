@@ -29,7 +29,6 @@ struct ring_buffer_sender {
 };
 
 struct config {
-	int upstream_fd;
 	int bind_fd;
 	size_t rb_size;
 	char *header;
@@ -44,8 +43,8 @@ struct config {
 };
 
 
-// Default config
 #define UPSTREAM_FD 0
+// Default config
 #define BIND_STRING ":::8080"
 #define RB_SIZE 2072576
 #define HEADER ""

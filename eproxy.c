@@ -13,7 +13,7 @@
 void read_upstream(struct config *conf, struct ring_buffer *rb) {
 	ssize_t n;
 
-	n = read(conf->upstream_fd, rb->data + rb->pos, conf->b_size);
+	n = read(UPSTREAM_FD, rb->data + rb->pos, conf->b_size);
 	if (n < 0) {
 		perror("read");
 		exit(EXIT_FAILURE);
@@ -189,8 +189,8 @@ int main(int argc, char* argv[]) {
 	}
 
 	ev.events = EPOLLIN;
-	ev.data.fd = conf.upstream_fd;
-	epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conf.upstream_fd, &ev);
+	ev.data.fd = UPSTREAM_FD;
+	epoll_ctl(epoll_fd, EPOLL_CTL_ADD, UPSTREAM_FD, &ev);
 	if (err != 0) {
 		perror("epoll_ctl");
 		exit(EXIT_FAILURE);
@@ -225,7 +225,7 @@ int main(int argc, char* argv[]) {
 	while (running) {
 		int nfds = epoll_wait(epoll_fd, events, conf.max_events, -1);
 		for (int i = 0; i < nfds; i++) {
-			if (events[i].data.fd == conf.upstream_fd) {
+			if (events[i].data.fd == UPSTREAM_FD) {
 				read_upstream(&conf, rb);
 				for (int fd = conf.first_fd; fd <= conf.last_fd; fd++) {
 					if (fcntl(fd, F_GETFD) != -1 || errno != EBADF) {
