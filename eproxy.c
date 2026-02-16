@@ -4,11 +4,24 @@
 #include <sys/epoll.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <fcntl.h>
 #include <arpa/inet.h>
 #include <signal.h>
 #include "eproxy.h"
 
+
+void stat_client(int fd, struct ring_buffer_sender *rbs) {
+	struct tcp_info info;
+	socklen_t len = sizeof(info);
+	fprintf(stderr, "Closing connection from %s:%d, total bytes sent: %llu, total tcp retransmissions: ", rbs->host, rbs->port, rbs->bytes_sent);
+	if (getsockopt(fd, IPPROTO_TCP, TCP_INFO, &info, &len) == 0)
+		fprintf(stderr, "%u\n", info.tcpi_total_retrans);
+	else {
+		fprintf(stderr, "unknown\n");
+		perror("getsockopt");
+	}
+}
 
 void read_upstream(struct config *conf, struct ring_buffer *rb) {
 	ssize_t n;
@@ -144,7 +157,7 @@ int serve_client(int fd, struct ring_buffer *rb, struct ring_buffer_sender *rbs)
 
 	return 0;
 close:
-	fprintf(stderr, "Closing connection from %s:%d, total bytes sent: %llu\n", rbs->host, rbs->port, rbs->bytes_sent);
+	stat_client(fd, rbs);
 	close(fd);
 	return -1;
 }
@@ -261,7 +274,7 @@ int main(int argc, char* argv[]) {
 
 	for (int fd = conf.client_fd_range[0]; fd <= conf.client_fd_range[1]; fd++) {
 		if (fcntl(fd, F_GETFD) != -1 || errno != EBADF) {
-			fprintf(stderr, "Closing connection from %s:%d, total bytes sent: %llu\n", rbs[fd]->host, rbs[fd]->port, rbs[fd]->bytes_sent);
+			stat_client(fd, rbs[fd]);
 			close(fd);
 		}
 	}
