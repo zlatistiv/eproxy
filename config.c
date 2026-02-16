@@ -15,37 +15,56 @@
 
 
 /*
- * string is in the format <host>:<port>
- * returns a file descriptor or -1 on fail
+ * string is in the format <host>:<port>,<header>,<backlog>
+ * where header and backlog are optional
  */
-int do_bind(char *string) {
-	char *host, *port;
-	int err;
+int do_bind(char *string, struct listener *listener) {
+	char *s, *host, *port, *header, *backlog;
+	int err = 0;
 	int fd;
 	int yes;
 	struct addrinfo hints, *res, *rp;
 
+	host = port = header = backlog = NULL;
+
+	s = strdup(string);
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family   = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags    = AI_PASSIVE;
-	host = string;
+	host = s;
 	yes = 1;
 
-	port = strrchr(string, ':');
-	if (port == string)
+	header = strchr(s, ',');
+	if (header) {
+		*header = '\0';
+		header++;
+		if (*header != '\0') {
+			backlog = strchr(header, ',');
+			if (backlog) {
+				*backlog = '\0';
+				backlog++;
+			}
+		}
+	}
+
+	port = strrchr(s, ':');
+	if (port == s)
 		host = NULL;
 
-	if (!port)
+	if (!port) {
+		free(s);
 		return -1;
+	}
 
 	*port = '\0';
 	port++;
 
 	err = getaddrinfo(host, port, &hints, &res);
-	*(port-1) = ':';
-	if (err != 0)
-		return -1;
+	if (err != 0) {
+		err = -1;
+		goto out;
+	}
 
 	for (rp = res; rp != NULL; rp = rp->ai_next) {
 		fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
@@ -61,9 +80,27 @@ int do_bind(char *string) {
 		fd = -1;
 	}
 
-	freeaddrinfo(res);
+	if (header) {
+		listener->header = malloc(strlen(header));
+		unescape_string(listener->header, header);
+	} else {
+		listener->header = HEADER;
+	}
 
-	return fd;
+	if (backlog)
+		listener->backlog = strtoull(backlog, NULL, 10);
+	else
+		listener->backlog = BACKLOG;
+
+	if (nonblock(fd) != 0)
+		err = -1;
+
+	listener->fd = fd;
+
+out:
+	freeaddrinfo(res);
+	free(s);
+	return err;
 }
 
 /*
@@ -110,20 +147,19 @@ int do_upstream(char *string) {
 	return fd;
 }
 
-void configure(struct config *conf, int argc, char *argv[]) {
+void configure(struct config *conf, int argc, char *argv[], int first_free_fd) {
 	int opt;
 	int option_index = 0;
 	int upstream_fd;
+	int err;
 
 	static struct option long_options[] = {
-		{"upstream", required_argument, 0, '0'},
-		{"bind",     required_argument, 0, '1'},
-		{"rbsize",   required_argument, 0, '2'},
-		{"header",   required_argument, 0, '3'},
-		{"maxconn",  required_argument, 0, '4'},
-		{"bsize",    required_argument, 0, '5'},
-		{"psize",    required_argument, 0, '6'},
-		{"backlog",  required_argument, 0, '7'},
+		{"upstream", required_argument, 0, 'u'},
+		{"listener", required_argument, 0, 'l'},
+		{"rbsize",   required_argument, 0, 'r'},
+		{"maxconn",  required_argument, 0, 'm'},
+		{"bsize",    required_argument, 0, 'b'},
+		{"psize",    required_argument, 0, 'p'},
 		{0, 0, 0, 0}
 	};
 
@@ -133,15 +169,14 @@ void configure(struct config *conf, int argc, char *argv[]) {
 	}
 
 	conf->rb_size = RB_SIZE;
-	conf->header = HEADER;
 	conf->maxconn = MAXCONN;
 	conf->b_size = B_SIZE;
-	conf->backlog = BACKLOG;
-	conf->first_fd = conf->last_fd = 5;
+	conf->listeners = NULL;
+	conf->n_listeners = 0;
 
 	while ((opt = getopt_long_only(argc, argv, "", long_options, &option_index)) != -1) {
 		switch (opt) {
-			case '0':
+			case 'u':
 				upstream_fd = do_upstream(optarg);
 				if (upstream_fd == -1) {
 					if (errno != 0)
@@ -154,9 +189,12 @@ void configure(struct config *conf, int argc, char *argv[]) {
 				dup2(upstream_fd, UPSTREAM_FD);
 				close(upstream_fd);
 				break;
-			case '1':
-				conf->bind_fd = do_bind(optarg);
-				if (conf->bind_fd == -1) {
+			case 'l':
+				conf->n_listeners++;
+				conf->listeners = reallocarray(conf->listeners, conf->n_listeners, sizeof(struct listener));
+				err = do_bind(optarg, &conf->listeners[conf->n_listeners - 1]);
+
+				if (err == -1) {
 					if (errno != 0)
 						perror("bind");
 					else
@@ -164,23 +202,17 @@ void configure(struct config *conf, int argc, char *argv[]) {
 					exit(EXIT_FAILURE);
 				}
 				break;
-			case '2':
+			case 'r':
 				conf->rb_size = (size_t)atoll(optarg);
 				break;
-			case '3':
-				conf->header = optarg;
-				break;
-			case '4':
+			case 'm':
 				conf->maxconn = (unsigned int)atoi(optarg);
 				break;
-			case '5':
+			case 'b':
 				conf->b_size = (size_t)atoll(optarg);
 				break;
-			case '6':
+			case 'p':
 				conf->p_size = (size_t)atoll(optarg);
-				break;
-			case '7':
-				conf->backlog = (size_t)atoll(optarg);
 				break;
 			default:
 				usage();
@@ -189,7 +221,7 @@ void configure(struct config *conf, int argc, char *argv[]) {
 	}
 
 	if (conf->p_size > 0) {
-		int err = fcntl(STDIN_FILENO, F_SETPIPE_SZ, conf->p_size);
+		err = fcntl(STDIN_FILENO, F_SETPIPE_SZ, conf->p_size);
 
 		if (err < 0) {
 			perror("Unable to set pipe size\n");
@@ -197,11 +229,12 @@ void configure(struct config *conf, int argc, char *argv[]) {
 		}
 	}
 
-	if (conf->bind_fd == 0) {
-		char *s = strdup(BIND_STRING);
-		conf->bind_fd = do_bind(s);
-		free(s);
-		if (conf->bind_fd == -1) {
+	if (conf->listeners == NULL) {
+		conf->n_listeners++;
+		conf->listeners = reallocarray(conf->listeners, conf->n_listeners, sizeof(struct listener));
+		err = do_bind(BIND_STRING, &conf->listeners[conf->n_listeners - 1]);
+
+		if (err == -1) {
 			if (errno != 0)
 				perror("bind");
 			else
@@ -211,13 +244,10 @@ void configure(struct config *conf, int argc, char *argv[]) {
 
 	}
 
-	if (nonblock(conf->bind_fd) != 0)
-		exit(EXIT_FAILURE);
+	conf->client_fd_range[0] = conf->client_fd_range[1] = first_free_fd + conf->n_listeners;
+	conf->max_events = conf->maxconn + first_free_fd; // 2 is for stdout and stderr
+	conf->max_fds = conf->maxconn + first_free_fd;
 
-	char *header = malloc(sizeof(conf->header));
-	unescape_string(header, conf->header);
-	conf->header = header;
-
-	conf->max_events = conf->maxconn + 2;
-	conf->max_fds = conf->maxconn + 4;
+	conf->listen_fd_range[0] = conf->listeners[0].fd;
+	conf->listen_fd_range[1] = conf->listeners[conf->n_listeners - 1].fd;
 }

@@ -28,18 +28,23 @@ struct ring_buffer_sender {
 	int port;
 };
 
-struct config {
-	int bind_fd;
-	size_t rb_size;
+struct listener {
+	int fd;
 	char *header;
+	size_t backlog;
+};
+
+struct config {
+	struct listener *listeners;
+	size_t n_listeners;
+	size_t rb_size;
 	unsigned int maxconn;
 	size_t b_size;
 	size_t p_size;
-	size_t backlog;
 	size_t max_events;
 	size_t max_fds;
-	int first_fd;
-	int last_fd;
+	int client_fd_range[2];
+	int listen_fd_range[2];
 };
 
 
@@ -53,31 +58,33 @@ struct config {
 #define P_SIZE 1048576
 #define BACKLOG 0
 
-int do_bind(char *string);
+int do_bind(char *string, struct listener *listener);
 int do_upstream(char *string);
-void configure(struct config *conf, int argc, char *argv[]);
+void configure(struct config *conf, int argc, char *argv[], int first_free_fd);
 
-int serve_client(int fd, struct config *conf, struct ring_buffer *rb, struct ring_buffer_sender *rbs);
+int serve_client(int fd, struct ring_buffer *rb, struct ring_buffer_sender *rbs);
 
 static void usage() {
 	fprintf(stderr,
-		"-upstream\n"
+		"-u, --upstream\n"
 		"	Upstream data source - tcp://<host>:<port>, leave empty to read from stdin.\n"
-		"-bind\n"
-		"	Listen address - <host>:<port> (default %s)\n"
-		"-rbsize\n"
+		"-l, --listener\n"
+		"	Listen address - <host>:<port>,<header>,<backlog> (default %s)\n"
+		"	header is a custom string that will be sent to each cient when\n"
+		"	they connect, escape sequences will be interpreted.\n"
+		"	passing the backlog parameter will start streaming\n"
+		"	with the given number of bytes behind the current position.\n"
+		"	header and backlog can be omitted.\n"
+		"	More than one listener can be defined.\n"
+		"-r, --rbsize\n"
 		"	Ring buffer size, (default %llu)\n"
-		"-header\n"
-		"	Custom header to send on each client connection. Escape sequences are interpreted. (default \"%s\")\n"
-		"-maxconn\n"
+		"-m, --maxconn\n"
 		"	Maximum number of concurrent connections. (default %llu)\n"
-		"-bsize\n"
+		"-b, --bsize\n"
 		"	Read buffer size for calls to read() on the upstream. (default %llu)\n"
-		"-psize\n"
-		"	Override the default pipe size if upstream is a pipe. Pass 0 to do no override. (default %llu)\n"
-		"-backlog\n"
-		"	Start streaming with the given number of bytes behind the current position of the reader. (default %llu)\n",
-	BIND_STRING, RB_SIZE, HEADER, MAXCONN, B_SIZE, P_SIZE, BACKLOG);
+		"-p, --psize\n"
+		"	Override the default pipe size if upstream is a pipe. Pass 0 to do no override. (default %llu)\n",
+	BIND_STRING, RB_SIZE, MAXCONN, B_SIZE, P_SIZE);
 }
 
 static int nonblock(int fd) {

@@ -27,7 +27,7 @@ void read_upstream(struct config *conf, struct ring_buffer *rb) {
 	rb->bytes_read += n;
 }
 
-int accept_client(struct config *conf, struct ring_buffer *rb, struct ring_buffer_sender *rbs[], int epoll_fd) {
+int accept_client(struct listener *listener, struct config *conf, struct ring_buffer *rb, struct ring_buffer_sender *rbs[], int epoll_fd) {
 	struct sockaddr_storage client_addr;
 	socklen_t addr_size = sizeof(client_addr);
 	struct epoll_event ev;
@@ -35,7 +35,7 @@ int accept_client(struct config *conf, struct ring_buffer *rb, struct ring_buffe
 	int port;
 	int client_fd;
 
-	client_fd = accept(conf->bind_fd, (struct sockaddr *)&client_addr, &addr_size);
+	client_fd = accept(listener->fd, (struct sockaddr *)&client_addr, &addr_size);
 
 	if (client_fd < 0) {
 		if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -100,11 +100,11 @@ int accept_client(struct config *conf, struct ring_buffer *rb, struct ring_buffe
 
 	rbs[client_fd]->pos = rb->pos;
 
-	size_t backlog = MIN(rb->bytes_read, conf->backlog);
+	size_t backlog = MIN(rb->bytes_read, listener->backlog);
 	rbs[client_fd]->start_pos = (rb->pos + rb->size - backlog) % rb->size;
 
 	ssize_t n;
-	n = send_all(client_fd, conf->header, strlen(conf->header));
+	n = send_all(client_fd, listener->header, strlen(listener->header));
 	if (n < 0) {
 		fprintf(stderr, "Unable to send header to %s:%d, closing connection.\n", host, port);
 		close(client_fd);
@@ -116,7 +116,7 @@ int accept_client(struct config *conf, struct ring_buffer *rb, struct ring_buffe
 	return client_fd;
 }
 
-int serve_client(int fd, struct config *conf, struct ring_buffer *rb, struct ring_buffer_sender *rbs) {
+int serve_client(int fd, struct ring_buffer *rb, struct ring_buffer_sender *rbs) {
 	ssize_t n;
 
 	if (rbs->pos <= rb->pos) {
@@ -167,8 +167,14 @@ int main(int argc, char* argv[]) {
 	sa.sa_handler = do_sigint;
 	sigaction(SIGINT, &sa, NULL);
 
+	epoll_fd = epoll_create1(0);
+	if (epoll_fd < 0) {
+		perror("epoll_create");
+		exit(EXIT_FAILURE);
+	}
+
 	memset(&conf, 0, sizeof(struct config));
-	configure(&conf, argc, argv);
+	configure(&conf, argc, argv, epoll_fd + 1);
 
 	rbs = calloc(conf.max_fds, sizeof(void *));
 	if (!rbs) {
@@ -179,12 +185,6 @@ int main(int argc, char* argv[]) {
 	events = (struct epoll_event *)calloc(conf.max_events, sizeof(struct epoll_event));
 	if (!events) {
 		perror("calloc");
-		exit(EXIT_FAILURE);
-	}
-
-	epoll_fd = epoll_create1(0);
-	if (epoll_fd < 0) {
-		perror("epoll_create");
 		exit(EXIT_FAILURE);
 	}
 
@@ -210,16 +210,18 @@ int main(int argc, char* argv[]) {
 	rb->pos = 0;
 	rb->bytes_read = 0;
 
-	if (listen(conf.bind_fd, 128) < 0) {
-		perror("listen");
-		exit(EXIT_FAILURE);
-	}
+	for (size_t i = 0; i < conf.n_listeners; i++) {
+		if (listen(conf.listeners[i].fd, 128) < 0) {
+			perror("listen");
+			exit(EXIT_FAILURE);
+		}
 
-	ev.data.fd = conf.bind_fd;
-	epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conf.bind_fd, &ev);
-	if (err != 0) {
-		perror("epoll_ctl");
-		exit(EXIT_FAILURE);
+		ev.data.fd = conf.listeners[i].fd;
+		epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conf.listeners[i].fd, &ev);
+		if (err != 0) {
+			perror("epoll_ctl");
+			exit(EXIT_FAILURE);
+		}
 	}
 
 	while (running) {
@@ -227,7 +229,7 @@ int main(int argc, char* argv[]) {
 		for (int i = 0; i < nfds; i++) {
 			if (events[i].data.fd == UPSTREAM_FD) {
 				read_upstream(&conf, rb);
-				for (int fd = conf.first_fd; fd <= conf.last_fd; fd++) {
+				for (int fd = conf.client_fd_range[0]; fd <= conf.client_fd_range[1]; fd++) {
 					if (fcntl(fd, F_GETFD) != -1 || errno != EBADF) {
 						ev.events = EPOLLOUT | EPOLLET | EPOLLHUP | EPOLLRDHUP | EPOLLERR;
 						ev.data.fd = fd;
@@ -238,13 +240,13 @@ int main(int argc, char* argv[]) {
 					}
 				}
 			}
-			else if (events[i].data.fd == conf.bind_fd) {
+			else if (events[i].data.fd <= conf.listen_fd_range[1]) {
 				int fd;
-				fd = accept_client(&conf, rb, rbs, epoll_fd);
-				conf.last_fd = MAX(fd, conf.last_fd);
+				fd = accept_client(&conf.listeners[events[i].data.fd - conf.listen_fd_range[0]], &conf, rb, rbs, epoll_fd);
+				conf.client_fd_range[1] = MAX(fd, conf.client_fd_range[1]);
 			}
 			else if (rbs[events[i].data.fd]) {
-				err = serve_client(events[i].data.fd, &conf, rb, rbs[events[i].data.fd]);
+				err = serve_client(events[i].data.fd, rb, rbs[events[i].data.fd]);
 				if (errno != EAGAIN && err != -1) {
 					ev.events = EPOLLHUP | EPOLLRDHUP | EPOLLERR;
 					ev.data.fd = events[i].data.fd;
@@ -257,7 +259,7 @@ int main(int argc, char* argv[]) {
 		}
 	}
 
-	for (int fd = conf.first_fd; fd <= conf.last_fd; fd++) {
+	for (int fd = conf.client_fd_range[0]; fd <= conf.client_fd_range[1]; fd++) {
 		if (fcntl(fd, F_GETFD) != -1 || errno != EBADF) {
 			fprintf(stderr, "Closing connection from %s:%d, total bytes sent: %llu\n", rbs[fd]->host, rbs[fd]->port, rbs[fd]->bytes_sent);
 			close(fd);
