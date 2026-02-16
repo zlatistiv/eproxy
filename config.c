@@ -244,7 +244,8 @@ void configure(struct config *conf, int argc, char *argv[], int first_free_fd) {
 
 	}
 
-	conf->client_fd_range[0] = conf->client_fd_range[1] = first_free_fd + conf->n_listeners;
+	conf->client_fd_range[0] = first_free_fd + conf->n_listeners;
+	conf->client_fd_range[1] = -1;
 	conf->max_events = conf->maxconn + first_free_fd; // 2 is for stdout and stderr
 	conf->max_fds = conf->maxconn + first_free_fd;
 

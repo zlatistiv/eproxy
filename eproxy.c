@@ -5,15 +5,15 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <fcntl.h>
 #include <arpa/inet.h>
 #include <signal.h>
 #include "eproxy.h"
 
 
-void stat_client(int fd, struct ring_buffer_sender *rbs) {
+void close_client(int fd, struct ring_buffer_sender *rbs) {
 	struct tcp_info info;
 	socklen_t len = sizeof(info);
+
 	fprintf(stderr, "Closing connection from %s:%d, total bytes sent: %llu, total tcp retransmissions: ", rbs->host, rbs->port, rbs->bytes_sent);
 	if (getsockopt(fd, IPPROTO_TCP, TCP_INFO, &info, &len) == 0)
 		fprintf(stderr, "%u\n", info.tcpi_total_retrans);
@@ -21,6 +21,9 @@ void stat_client(int fd, struct ring_buffer_sender *rbs) {
 		fprintf(stderr, "unknown\n");
 		perror("getsockopt");
 	}
+
+	close(fd);
+	rbs->active = false;
 }
 
 void read_upstream(struct config *conf, struct ring_buffer *rb) {
@@ -125,6 +128,7 @@ int accept_client(struct listener *listener, struct config *conf, struct ring_bu
 	rbs[client_fd]->bytes_sent += n;
 	strncpy(rbs[client_fd]->host, host, INET6_ADDRSTRLEN);
 	rbs[client_fd]->port = port;
+	rbs[client_fd]->active = true;
 
 	return client_fd;
 }
@@ -157,8 +161,7 @@ int serve_client(int fd, struct ring_buffer *rb, struct ring_buffer_sender *rbs)
 
 	return 0;
 close:
-	stat_client(fd, rbs);
-	close(fd);
+	close_client(fd, rbs);
 	return -1;
 }
 
@@ -243,7 +246,7 @@ int main(int argc, char* argv[]) {
 			if (events[i].data.fd == UPSTREAM_FD) {
 				read_upstream(&conf, rb);
 				for (int fd = conf.client_fd_range[0]; fd <= conf.client_fd_range[1]; fd++) {
-					if (fcntl(fd, F_GETFD) != -1 || errno != EBADF) {
+					if (rbs[fd]->active) {
 						ev.events = EPOLLOUT | EPOLLET | EPOLLHUP | EPOLLRDHUP | EPOLLERR;
 						ev.data.fd = fd;
 						err = epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
@@ -273,10 +276,8 @@ int main(int argc, char* argv[]) {
 	}
 
 	for (int fd = conf.client_fd_range[0]; fd <= conf.client_fd_range[1]; fd++) {
-		if (fcntl(fd, F_GETFD) != -1 || errno != EBADF) {
-			stat_client(fd, rbs[fd]);
-			close(fd);
-		}
+		if (rbs[fd]->active)
+			close_client(fd, rbs[fd]);
 	}
 	fprintf(stderr, "Shutting down, total bytes read from upstream: %llu\n", rb->bytes_read);
 

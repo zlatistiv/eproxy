@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <stdbool.h>
 
 #ifndef F_SETPIPE_SZ
 #define F_SETPIPE_SZ 1031
@@ -26,6 +27,7 @@ struct ring_buffer_sender {
 	size_t start_pos;
 	char host[INET6_ADDRSTRLEN];
 	int port;
+	bool active;
 };
 
 struct listener {
