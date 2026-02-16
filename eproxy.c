@@ -258,7 +258,7 @@ int main(int argc, char* argv[]) {
 				fd = accept_client(&conf.listeners[events[i].data.fd - conf.listen_fd_range[0]], &conf, rb, rbs, epoll_fd);
 				conf.client_fd_range[1] = MAX(fd, conf.client_fd_range[1]);
 			}
-			else if (rbs[events[i].data.fd]) {
+			else {
 				err = serve_client(events[i].data.fd, rb, rbs[events[i].data.fd]);
 				if (errno != EAGAIN && err != -1) {
 					ev.events = EPOLLHUP | EPOLLRDHUP | EPOLLERR;
